@@ -9,7 +9,7 @@ from alembic import context
 from app.db.base import Base
 
 from app.core.config import settings
-
+from app.video.models import *
 # Это Alembic config object
 config = context.config
 
