@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     APP_ENV: str  
     DEBUG: str
     DATABASE_URL_ASYNC: str  
+    TG_BOT_TOKEN:str
+    TG_BOT_ID:int
+    TG_CHAT_ID:int
+    AI_TOKEN:str
 
     @property
     def DATABASE_URL_SYNC(self) -> str:
