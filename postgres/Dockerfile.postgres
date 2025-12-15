@@ -1,0 +1,10 @@
+FROM postgres:15-alpine
+# psql -U your_user -d postgres -c "DROP DATABASE your_project;"
+
+# Configure default runtime options, for example max_connections, shared_buffers, etc.
+# Use ENTRYPOINT to pass custom PostgreSQL configuration
+CMD ["postgres", "-c", "max_connections=1000", "-c", "shared_buffers=256MB", "-c", "effective_cache_size=768MB", "-c", "maintenance_work_mem=64MB", "-c", "checkpoint_completion_target=0.7", "-c", "wal_buffers=16MB", "-c", "default_statistics_target=100"]
+
+# Expose the default PostgreSQL port
+EXPOSE 5432
+

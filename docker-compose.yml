@@ -1,0 +1,53 @@
+# docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  postgres:
+    build:
+      context: ./postgres
+      dockerfile: Dockerfile.postgres
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data     
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "127.0.0.1:5435:5432"
+    networks:
+      - backend_tg
+  fastapi:
+    build:
+      context: ./fastapi
+      dockerfile: Dockerfile
+      target: production
+    command: sh -c " alembic upgrade head && touch /tmp/migrations-done && uvicorn app.main:app --no-access-log --host 0.0.0.0 --port 8123"
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/migrations-done"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+      start_period: 5s
+    # ports:
+    #   - "8123:8123"
+    environment:
+      - APP_ENV=production  
+    restart: unless-stopped    
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend_tg 
+  
+volumes:
+  postgres_data:
+  
+networks: 
+  backend_tg:
+    driver: bridge
