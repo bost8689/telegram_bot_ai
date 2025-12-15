@@ -12,7 +12,8 @@ class Settings(BaseSettings):
     TG_BOT_ID:int
     TG_CHAT_ID:int
     AI_TOKEN:str
-
+    AI_API_URL:str
+    
     @property
     def DATABASE_URL_SYNC(self) -> str:
         if self.DATABASE_URL_ASYNC.startswith("postgresql+asyncpg://"):

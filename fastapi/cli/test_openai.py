@@ -2,9 +2,7 @@
 
 import os
 import sys
-
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-print(PROJECT_ROOT)
 sys.path.insert(0, PROJECT_ROOT)
 
 import typer
@@ -42,7 +40,7 @@ async def execute():
    
     client = AsyncOpenAI(
         api_key=settings.AI_TOKEN,
-        base_url="https://api.deepseek.com"
+        base_url=settings.AI_API_URL
     )
     
     response = await client.chat.completions.create(
