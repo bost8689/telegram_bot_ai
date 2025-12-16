@@ -100,11 +100,10 @@ async def execute():
 
 @app.command()
 def run():
-    """Запустить"""   
-    now = datetime.now()  
-    typer.echo(f"Запуск {now}")     
-    asyncio.run(execute())  
-    typer.echo(f"🏁 Завершено {now}")
+    """Запустить"""
+    typer.echo(f"🔁 Началась загрузка данных {datetime.now()}")     
+    asyncio.run(execute())   
+    typer.echo(f"🏁 Завершено {datetime.now()}")
 
 if __name__ == "__main__":
     app()
