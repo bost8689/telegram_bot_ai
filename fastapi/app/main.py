@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from fastapi.responses import JSONResponse
 from app.api.v1.router import api_router
+from app.core.lifespan import lifespan
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -20,6 +21,7 @@ app = FastAPI(
     docs_url="/docs" if settings.DEBUG else None,
     redoc_url="/redoc" if settings.DEBUG else None,
     openapi_url="/openapi.json" if settings.DEBUG else None,    
+    lifespan=lifespan,
     redirect_slashes=False
 )
 

@@ -6,125 +6,219 @@ logger = get_logger("openai_handler")
 from app.db.session import AsyncSessionLocal
 from app.video.models import *
 import json
-import re
+from datetime import datetime, date, time
 
 from datetime import datetime, date
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, distinct
 
-async def execute_query_from_json(query_json: dict) -> int:
+async def get_data_from_user_query(user_query_text: str) -> int:
+    logger.info(f"входные данные",user_query_text=user_query_text)
+    query_json = await _send_promt_to_ai(user_query_text)
+    logger.info(f"ответ от ai",query_json=query_json)
+    result = await _execute_query_from_json(query_json)
+    logger.info(f"данные из бд для ответа в тг",result=result)
+    return result
 
+def _parse_date_to_datetime_range(dt_input) -> tuple[datetime, datetime]:
+    """Преобразует строку 'YYYY-MM-DD' в (start, end) с часовым поясом UTC."""
+    if isinstance(dt_input, str):
+        d = date.fromisoformat(dt_input)
+    elif isinstance(dt_input, date):
+        d = dt_input
+    else:
+        raise ValueError("Ожидалась строка вида 'YYYY-MM-DD' или date")
+    start = datetime.combine(d, time.min) 
+    end = datetime.combine(d, time.max) 
+    return start, end
+
+async def _execute_query_from_json(query: dict) -> int:
+    """
+    Выполняет аналитический запрос к БД на основе типа и фильтров.
+    Возвращает целое число — результат агрегации.
+    """
     async with AsyncSessionLocal() as db:
+        query_type = query["type"]
+        filters = query.get("filters", {})
+        # Подсчёт видео
+        if query_type is None:
+            logger.error(f"Неверный формат запроса")
+            return f"Неверный формат запроса"
+        if query_type == "total_videos":
+            stmt = select(func.count()).select_from(Video)
+            conditions = []
 
-        q_type = query_json["type"]
-        filters = query_json.get("filters", {})
+            if "creator_id" in filters:
+                conditions.append(Video.creator_id == filters["creator_id"])
 
-        if q_type == "total_count":
-            result = await db.execute(select(func.count()).select_from(Video))
-            return result.scalar_one()
+            if "date" in filters:
+                start, end = _parse_date_to_datetime_range(filters["date"])
+                conditions.append(Video.video_created_at >= start)
+                conditions.append(Video.video_created_at <= end)
+            elif "start_date" in filters and "end_date" in filters:
+                start = datetime.fromisoformat(filters["start_date"])
+                end = datetime.fromisoformat(filters["end_date"])
+                # Или, если передаются без времени:
+                if "T" not in filters["start_date"]:
+                    start, _ = _parse_date_to_datetime_range(filters["start_date"])
+                if "T" not in filters["end_date"]:
+                    _, end = _parse_date_to_datetime_range(filters["end_date"])
+                conditions.append(Video.video_created_at >= start)
+                conditions.append(Video.video_created_at <= end)
 
-        elif q_type == "count_by_creator_and_date":
-            creator_id = filters["creator_id"]
-            start = datetime.fromisoformat(filters["start_date"])
-            end = datetime.fromisoformat(filters["end_date"])
-            stmt = (
-                select(func.count())
-                .select_from(Video)
-                .where(
-                    and_(
-                        Video.creator_id == creator_id,
-                        Video.video_created_at >= start,
-                        Video.video_created_at <= end,
-                    )
-                )
-            )
+            if conditions:
+                stmt = stmt.where(and_(*conditions))
             result = await db.execute(stmt)
             return result.scalar_one()
 
-        elif q_type == "count_by_views_threshold":
-            threshold = filters["views_threshold"]
-            stmt = select(func.count()).select_from(Video).where(Video.views_count > threshold)
+        # Рост просмотров (по снапшотам)
+        elif query_type == "total_views_growth_on_date":
+            stmt = select(func.coalesce(func.sum(VideoSnapshot.delta_views_count), 0))
+            conditions = []
+
+            if "date" in filters:
+                start, end = _parse_date_to_datetime_range(filters["date"])
+                conditions.append(VideoSnapshot.created_at >= start)
+                conditions.append(VideoSnapshot.created_at <= end)
+            elif "start_date" in filters and "end_date" in filters:
+                start = datetime.fromisoformat(filters["start_date"])
+                end = datetime.fromisoformat(filters["end_date"])
+                if "T" not in filters["start_date"]:
+                    start, _ = _parse_date_to_datetime_range(filters["start_date"])
+                if "T" not in filters["end_date"]:
+                    _, end = _parse_date_to_datetime_range(filters["end_date"])
+                conditions.append(VideoSnapshot.created_at >= start)
+                conditions.append(VideoSnapshot.created_at <= end)
+
+            if "creator_id" in filters:
+                stmt = stmt.join(Video, Video.id == VideoSnapshot.video_id)
+                conditions.append(Video.creator_id == filters["creator_id"])
+
+            if conditions:
+                stmt = stmt.where(and_(*conditions))
             result = await db.execute(stmt)
             return result.scalar_one()
 
-        elif q_type == "total_delta_views_on_date":
-            target_date = date.fromisoformat(filters["target_date"])  # "2025-11-28"
-            start = datetime.combine(target_date, datetime.min.time())
-            end = datetime.combine(target_date, datetime.max.time())
-            stmt = (
-                select(func.sum(VideoSnapshot.delta_views_count))
-                .where(
-                    and_(
-                        VideoSnapshot.created_at >= start,
-                        VideoSnapshot.created_at <= end,
-                    )
-                )
-            )
-            result = await db.execute(stmt)
-            return result.scalar_one() or 0
+        # Видео с новыми просмотрами (delta > 0)
+        elif query_type == "videos_with_new_views_on_date":
+            stmt = select(func.count(distinct(VideoSnapshot.video_id)))
+            conditions = [
+                VideoSnapshot.delta_views_count > 0
+            ]
 
-        elif q_type == "distinct_videos_with_views_on_date":
-            target_date = date.fromisoformat(filters["target_date"])  # "2025-11-27"
-            start = datetime.combine(target_date, datetime.min.time())
-            end = datetime.combine(target_date, datetime.max.time())
-            stmt = (
-                select(func.count(func.distinct(VideoSnapshot.video_id)))
-                .where(
+            if "date" in filters:
+                start, end = _parse_date_to_datetime_range(filters["date"])
+                conditions.append(VideoSnapshot.created_at >= start)
+                conditions.append(VideoSnapshot.created_at <= end)
+            elif "start_date" in filters and "end_date" in filters:
+                start = datetime.fromisoformat(filters["start_date"])
+                end = datetime.fromisoformat(filters["end_date"])
+                if "T" not in filters["start_date"]:
+                    start, _ = _parse_date_to_datetime_range(filters["start_date"])
+                if "T" not in filters["end_date"]:
+                    _, end = _parse_date_to_datetime_range(filters["end_date"])
+                conditions.append(VideoSnapshot.created_at >= start)
+                conditions.append(VideoSnapshot.created_at <= end)
+
+            if "creator_id" in filters:
+                stmt = stmt.join(Video, Video.id == VideoSnapshot.video_id)
+                conditions.append(Video.creator_id == filters["creator_id"])
+
+            stmt = stmt.where(and_(*conditions))
+            result = await db.execute(stmt)
+            return result.scalar_one()
+
+        # Видео с просмотрами выше порога
+        elif query_type == "videos_with_views_over":
+            threshold = filters["threshold"]
+
+            # Если есть временные фильтры — работаем через снапшоты
+            if "date" in filters or "start_date" in filters:
+                # Подзапрос: последний снапшот для каждого видео в указанный период
+                snap_subq = select(
+                    VideoSnapshot.video_id,
+                    VideoSnapshot.views_count,
+                    VideoSnapshot.created_at
+                )
+
+                if "date" in filters:
+                    start, end = _parse_date_to_datetime_range(filters["date"])
+                    snap_subq = snap_subq.where(
+                        and_(
+                            VideoSnapshot.created_at >= start,
+                            VideoSnapshot.created_at <= end
+                        )
+                    )
+                elif "start_date" in filters and "end_date" in filters:
+                    start = datetime.fromisoformat(filters["start_date"])
+                    end = datetime.fromisoformat(filters["end_date"])
+                    if "T" not in filters["start_date"]:
+                        start, _ = _parse_date_to_datetime_range(filters["start_date"])
+                    if "T" not in filters["end_date"]:
+                        _, end = _parse_date_to_datetime_range(filters["end_date"])
+                    snap_subq = snap_subq.where(
+                        and_(
+                            VideoSnapshot.created_at >= start,
+                            VideoSnapshot.created_at <= end
+                        )
+                    )
+
+                # Берём последний снапшот на видео в периоде
+                snap_subq = (
+                    snap_subq.add_columns(
+                        func.row_number().over(
+                            partition_by=VideoSnapshot.video_id,
+                            order_by=VideoSnapshot.created_at.desc()
+                        ).label("rn")
+                    )
+                    .subquery()
+                )
+
+                stmt = select(func.count()).select_from(snap_subq).where(
                     and_(
-                        VideoSnapshot.created_at >= start,
-                        VideoSnapshot.created_at <= end,
-                        VideoSnapshot.delta_views_count > 0,
+                        snap_subq.c.rn == 1,
+                        snap_subq.c.views_count > threshold
                     )
                 )
-            )
-            result = await db.execute(stmt)
-            return result.scalar_one() or 0
+
+                if "creator_id" in filters:
+                    stmt = stmt.join(Video, Video.id == snap_subq.c.video_id)
+                    stmt = stmt.where(Video.creator_id == filters["creator_id"])
+
+                result = await db.execute(stmt)
+                return result.scalar_one()
+
+            # Если нет даты — используем основную таблицу videos
+            else:
+                stmt = select(func.count()).select_from(Video).where(
+                    Video.views_count > threshold
+                )
+                if "creator_id" in filters:
+                    stmt = stmt.where(Video.creator_id == filters["creator_id"])
+                result = await db.execute(stmt)
+                return result.scalar_one()
 
         else:
-            logger.error(f"Неизвестный тип запроса ",q_type=q_type)
-            raise ValueError(f"Неизвестный тип запроса: {q_type}")
+            logger.error(f"Неизвестный тип запроса: {query_type}")
+            return f"Неизвестный тип запроса"
+ 
 
-# Примеры запросов:
-#     «Сколько всего видео есть в системе?»
-#     «Сколько видео у креатора с id X вышло с 2025-11-01 по 2025-11-05 включительно?»
-#     «Сколько видео набрало больше 100000 просмотров за всё время?»
-#     «На сколько просмотров в сумме выросли все видео 2025-11-28?»
-#     «Сколько разных видео получали новые просмотры 2025-11-27?»
-
-async def send_promt_to_ai(user_query):
+async def _send_promt_to_ai(user_query)->json:
 
     promt = """
-
-    Ты — строгий парсер запросов на русском языке. Твоя задача — извлечь из текста параметры фильтрации и вернуть ТОЛЬКО валидный JSON без каких-либо пояснений, markdown или дополнительного текста.
-    videos
-    id: str — уникальный ID видео
-    creator_id: str — ID креатора
-    video_created_at: datetime — дата публикации видео
-    views_count: int — текущее (финальное) число просмотров
-    likes_count, comments_count, reports_count: int
-    created_at, updated_at: datetime
-    video_snapshots
-
-    id: str — ID снапшота
-    video_id: str → ссылка на videos.id
-    views_count, likes_count, и т.д. — значения на момент замера
-    delta_views_count, delta_likes_count, и т.д. — прирост с предыдущего замера
-    created_at: datetime — время замера (обычно каждый час)
-    updated_at: datetime
-    Правила:
-
-    Никогда не выдумывай поля — используй только указанные.
-    Для агрегации по дате используй video_created_at из videos (для даты выхода видео) или created_at из video_snapshots (для даты замера).
-    Прирост просмотров за день = сумма delta_views_count по всем снапшотам с created_at в этот день.
-    Возвращай только валидный JSON вида:    
-    где:
-    type — одно из: "total_count", "count_by_creator_and_date", "count_by_views_threshold", "total_delta_views_on_date", "distinct_videos_with_views_on_date"
-    sql_intent — краткое описание на английском
-    filters — только те параметры, что есть в запросе (даты в ISO 8601, числа — как есть)
-
-    Ответь только JSON, без пояснений, без ```, только валидный JSON.
+    Твоя задача — извлечь из текста на русском языке параметры фильтрации и вернуть JSON.
+    Возможные значения type:
+    "total_videos" -creator_id-если указан id, date - если указана дата, (start_date, end_date) - если указан диапазон
+    "videos_with_views_over" → требует threshold, date - если указана дата, (start_date, end_date) - если указан диапазон
+    "total_views_growth_on_date" → creator_id - если указан id, date - если указана дата, (start_date, end_date) - если указан диапазон
+    "videos_with_new_views_on_date" → требует date
+    Используй только поля:    
+    Все даты в filters — в формате YYYY-MM-DD (без времени)    
+    Json должен быть валидный строго без ``` и дополнительного текста и символов.
+    Ечсли запро не относится к запросам видео, то type=null
+    Формат вывода {format_json}
     Теперь обработай этот запрос:{user_query}"""
 
-    full_prompt = promt.format(user_query=user_query) 
+    full_prompt = promt.format(format_json='без ``` {"type": "...", "filters": ... }',user_query=user_query) 
 
     client = AsyncOpenAI(
         api_key=settings.AI_TOKEN,
@@ -138,8 +232,5 @@ async def send_promt_to_ai(user_query):
     data = response.choices[0].message.content
     parsed_data = json.loads(data)
 
-    answer = await execute_query_from_json(parsed_data)
-    logger.info(f"Ответ от AI",data=data)
-
-    return answer
-
+    return parsed_data
+ 

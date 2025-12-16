@@ -8,16 +8,11 @@ sys.path.insert(0, PROJECT_ROOT)
 import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from dotenv import load_dotenv
-from aiogram.exceptions import TelegramNetworkError, TelegramAPIError
-import os
+from app.core.config import settings
+from app.openapi.handler import get_data_from_user_query
 
 from app.core.logging import get_logger
 logger = get_logger("bot_runner")
-
-from app.core.config import settings
-
-from app.openapi.handler import send_promt_to_ai
 
 BOT_TOKEN = settings.TG_BOT_TOKEN
 if not BOT_TOKEN:
@@ -26,13 +21,11 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-
-
 # Обработчики событий
 @dp.message(Command("start"))
 async def on_start(message: types.Message):
     logger.info(f"User {message.from_user.id} (@{message.from_user.username}) sent /start")
-    await message.answer("Привет! Я бот с логированием.")
+    await message.answer("Привет! Я готов ответить на твои запросы по Видео.")
 
 @dp.message()
 async def on_any_message(message: types.Message):
@@ -40,7 +33,7 @@ async def on_any_message(message: types.Message):
     text = message.text or message.caption or "non-text content"
     logger.info(f"New event from {user.id} (@{user.username}): {text!r}")   
     
-    result = await send_promt_to_ai(text)
+    result = await get_data_from_user_query(text)
     logger.info(f"Результат AI",result=result)
     
     try:        
@@ -67,7 +60,7 @@ async def start_polling_with_restart():
             await dp.start_polling(bot)
 
         except Exception as e:
-            logger.exception(f"Неизвестная ошибка: {e}. Перезапуск через 15 секунд...")
+            logger.error(f"Неизвестная ошибка: {e}. Перезапуск через 15 секунд...")
             await asyncio.sleep(15)
 
         finally:        
