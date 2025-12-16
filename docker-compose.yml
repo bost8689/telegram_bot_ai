@@ -1,3 +1,4 @@
+# для разработки
 # docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 
 services:
@@ -27,15 +28,13 @@ services:
       context: ./fastapi
       dockerfile: Dockerfile
       target: production
-    command: sh -c " alembic upgrade head && touch /tmp/migrations-done && uvicorn app.main:app --no-access-log --host 0.0.0.0 --port 8123"
+    command: sh -c " alembic upgrade head && touch /tmp/migrations-done && uvicorn app.main:app --no-access-log --host 127.0.0.1 --port 8123"
     healthcheck:
       test: ["CMD", "test", "-f", "/tmp/migrations-done"]
       interval: 2s
       timeout: 1s
       retries: 30
       start_period: 5s
-    # ports:
-    #   - "8123:8123"
     environment:
       - APP_ENV=production  
     restart: unless-stopped    
@@ -44,6 +43,23 @@ services:
         condition: service_healthy
     networks:
       - backend_tg 
+
+  run_tg_bot:
+    build:
+      context: ./fastapi
+      dockerfile: Dockerfile
+      target: production
+    command: python app/bot/runner.py
+    environment:
+      - APP_ENV=production
+    restart: unless-stopped
+    depends_on:      
+      postgres:
+        condition: service_healthy   
+      fastapi:
+        condition: service_healthy    
+    networks:
+      - backend_tg
   
 volumes:
   postgres_data:
